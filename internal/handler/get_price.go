@@ -2,7 +2,6 @@ package handler
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
@@ -26,9 +25,20 @@ func GetICBCGoldPrice() (result [][]string, err error) {
 	doc.Find("#resultTable>tbody").Children().Each(func(i int, tr *goquery.Selection) {
 		arr := []string{}
 		tr.Children().Each(func(i int, s *goquery.Selection) {
-			pattern := regexp.MustCompile(`\s+`)
-			res := pattern.ReplaceAllString(s.Text(), " ")
-			arr = append(arr, strings.TrimSpace(res))
+			trChildTag := s.Get(0).Data
+			if trChildTag == "th" {
+				arr = append(arr, strings.TrimSpace(s.Text()))
+			} else if trChildTag == "td" {
+				if len(s.Children().Nodes) == 0 {
+					arr = append(arr, strings.TrimSpace(s.Text()))
+				} else {
+					child := s.Children().Nodes[0]
+					if child.Data == "img" {
+						alt, _ := s.Children().Attr("alt")
+						arr = append(arr, alt)
+					}
+				}
+			}
 		})
 		result = append(result, arr)
 	})
