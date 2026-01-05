@@ -1,25 +1,27 @@
 package cfg
 
 import (
-	"fmt"
+	"os"
 
-	"github.com/spf13/viper"
+	"github.com/joho/godotenv"
 )
 
 func init() {
-	viper.SetConfigName("config")
-	viper.AddConfigPath(".")
-	viper.AddConfigPath(".")
-	viper.AddConfigPath("../.")
-	viper.AddConfigPath("../../.")
-	viper.AddConfigPath("../../../.")
-	viper.AddConfigPath("../../../../../.")
-	viper.AddConfigPath("../../../../")
-	viper.SetConfigType("toml")
-	if err := viper.ReadInConfig(); err != nil {
-		panic(fmt.Sprintf("couldn't load config: %s", err))
-	}
-	GlobalConfig.FeiShuRobotToken = viper.GetString("feishu.accessToken")
+	godotenv.Load()
+	// viper.SetConfigName("config")
+	// viper.AddConfigPath(".")
+	// viper.AddConfigPath(".")
+	// viper.AddConfigPath("../.")
+	// viper.AddConfigPath("../../.")
+	// viper.AddConfigPath("../../../.")
+	// viper.AddConfigPath("../../../../../.")
+	// viper.AddConfigPath("../../../../")
+	// viper.SetConfigType("toml")
+	// if err := viper.ReadInConfig(); err != nil {
+	// 	panic(fmt.Sprintf("couldn't load config: %s", err))
+	// }
+	// GlobalConfig.FeiShuRobotToken = viper.GetString("feishu.accessToken")
+	GlobalConfig.FeiShuRobotToken = os.Getenv("FEISHU_ACCESS_TOKEN")
 }
 
 var GlobalConfig = globalConfig{}
