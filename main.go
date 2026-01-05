@@ -25,7 +25,16 @@ type GoldInfo struct {
 }
 
 func main() {
+	// 添加 panic 恢复机制
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[%s] 程序发生 panic: %v\n", time.Now().Format("2006-01-02 15:04:05"), r)
+		}
+	}()
+
 	feishuClient := feishu.NewClient(cfg.GlobalConfig.FeiShuRobotToken, "")
+
+	fmt.Println("金价推送服务已启动，每1分钟推送一次...")
 
 	// 启动时立即执行一次
 	sendGoldPrice(feishuClient)
@@ -34,7 +43,6 @@ func main() {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
-	fmt.Println("金价推送服务已启动，每1分钟推送一次...")
 	for range ticker.C {
 		sendGoldPrice(feishuClient)
 	}
@@ -42,6 +50,13 @@ func main() {
 
 // sendGoldPrice 获取并发送金价信息
 func sendGoldPrice(client *feishu.Client) {
+	// 添加 panic 恢复，避免单次执行失败导致整个程序崩溃
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[%s] sendGoldPrice 发生 panic: %v\n", time.Now().Format("2006-01-02 15:04:05"), r)
+		}
+	}()
+
 	fmt.Printf("[%s] 开始获取金价...\n", time.Now().Format("2006-01-02 15:04:05"))
 
 	result, err := handler.GetICBCGoldPrice()
