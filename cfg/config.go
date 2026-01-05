@@ -21,7 +21,7 @@ func init() {
 	// 	panic(fmt.Sprintf("couldn't load config: %s", err))
 	// }
 	// GlobalConfig.FeiShuRobotToken = viper.GetString("feishu.accessToken")
-	GlobalConfig.FeiShuRobotToken = os.Getenv("FEISHU_ACCESS_TOKEN")
+	GlobalConfig.FeiShuRobotToken = os.Getenv("FEI_SHU_ACCESS_TOKEN")
 }
 
 var GlobalConfig = globalConfig{}
