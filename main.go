@@ -38,7 +38,7 @@ func main() {
 			cron.WithSeconds(),
 			cron.WithChain(cron.Recover(ILog{})))
 
-		c.AddJob("@every 1s", icbc.NewIcbcCron())
+		c.AddJob("@every 1m", icbc.NewIcbcCron())
 		c.Start()
 		select {}
 	}()
