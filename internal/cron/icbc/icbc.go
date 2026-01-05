@@ -190,6 +190,10 @@ func buildFeishuCard(goldList []GoldInfo) string {
 		},
 	})
 
+	title := "📊 工行积存金实时价格"
+	if len(goldList) > 0 {
+		title = fmt.Sprintf("%s:%s", title, goldList[0].RealTimePrice)
+	}
 	card := map[string]interface{}{
 		"config": map[string]interface{}{
 			"wide_screen_mode": true,
@@ -198,7 +202,7 @@ func buildFeishuCard(goldList []GoldInfo) string {
 		"header": map[string]interface{}{
 			"title": map[string]interface{}{
 				"tag":     "plain_text",
-				"content": "📊 工行积存金实时价格",
+				"content": title,
 			},
 			"template": "gold",
 		},
