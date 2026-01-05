@@ -8,7 +8,6 @@ require (
 	github.com/CatchZeng/feishu v1.3.2
 	github.com/PuerkitoBio/goquery v1.10.3
 	github.com/imroc/req/v3 v3.54.2
-	github.com/modood/table v0.0.0-20220527013332-8d47e76dad33
 	github.com/spf13/viper v1.20.1
 )
 
@@ -25,8 +24,8 @@ require (
 	github.com/quic-go/qpack v0.5.1 // indirect
 	github.com/quic-go/quic-go v0.53.0 // indirect
 	github.com/refraction-networking/utls v1.7.3 // indirect
+	github.com/rogpeppe/go-internal v1.11.0 // indirect
 	github.com/sagikazarmark/locafero v0.7.0 // indirect
-	github.com/smartystreets/goconvey v1.8.1 // indirect
 	github.com/sourcegraph/conc v0.3.0 // indirect
 	github.com/spf13/afero v1.12.0 // indirect
 	github.com/spf13/cast v1.7.1 // indirect
