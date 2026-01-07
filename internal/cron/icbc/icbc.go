@@ -190,7 +190,7 @@ func buildFeishuCard(goldList []GoldInfo) string {
 		},
 	})
 
-	title := "📊 工行积存金实时价格"
+	title := "📊 工行实时价格"
 	if len(goldList) > 0 {
 		title = fmt.Sprintf("%s:%s", title, goldList[0].RealTimePrice)
 	}
