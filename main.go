@@ -1,15 +1,10 @@
 package main
 
 import (
-	"context"
 	"daliy-glod-price-notic/internal/cron/icbc"
 	"daliy-glod-price-notic/internal/global"
 	"fmt"
 	"log"
-	"os/signal"
-	"syscall"
-
-	"github.com/robfig/cron/v3"
 )
 
 func init() {
@@ -31,18 +26,19 @@ func (ILog) Error(err error, msg string, keysAndValues ...interface{}) {
 // GoldInfo 金价信息结构
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-	go func() {
-		c := cron.New(
-			cron.WithSeconds(),
-			cron.WithChain(cron.Recover(ILog{})))
+	icbc.NewIcbcCron().Run()
+	// ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	// defer stop()
+	// go func() {
+	// 	c := cron.New(
+	// 		cron.WithSeconds(),
+	// 		cron.WithChain(cron.Recover(ILog{})))
 
-		c.AddJob("@every 1m", icbc.NewIcbcCron())
-		c.Start()
-		select {}
-	}()
-	// Listen for the interrupt signal.
-	<-ctx.Done()
-	stop()
+	// 	c.AddJob("@every 1m", icbc.NewIcbcCron())
+	// 	c.Start()
+	// 	select {}
+	// }()
+	// // Listen for the interrupt signal.
+	// <-ctx.Done()
+	// stop()
 }

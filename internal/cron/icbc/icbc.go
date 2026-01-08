@@ -6,9 +6,18 @@ import (
 	"daliy-glod-price-notic/internal/handler"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strconv"
 	"time"
 
 	"github.com/CatchZeng/feishu/pkg/feishu"
+	"github.com/patrickmn/go-cache"
+)
+
+var (
+	// alertCache 用于控制@消息发送次数，key为价格区间标识，value为发送次数
+	// 过期时间1小时，自动清理间隔10分钟
+	alertCache = cache.New(1*time.Hour, 10*time.Minute)
 )
 
 type icbcCron struct{}
@@ -55,9 +64,18 @@ func sendGoldPrice(client *feishu.Client) {
 		return
 	}
 
-	cardJSON := buildFeishuCard(goldList)
+	// 检查是否需要发送@消息
+	currentPrice := ""
+	if len(goldList) > 0 {
+		currentPrice = goldList[0].RealTimePrice
+	}
+	shouldAlert, alertInfo := checkPriceAlert(currentPrice)
+
+	// 构建卡片消息（包含@信息）
+	cardJSON := buildFeishuCard(goldList, shouldAlert, alertInfo)
 	msg := feishu.NewInteractiveMessage().SetCard(cardJSON)
 	client.Send(msg)
+
 	fmt.Printf("[%s] 金价推送成功\n", time.Now().Format("2006-01-02 15:04:05"))
 }
 
@@ -108,8 +126,15 @@ type GoldInfo struct {
 	UpAndDown3          string // 涨跌
 }
 
+// AlertInfo 告警信息
+type AlertInfo struct {
+	Threshold     float64  // 触发的阈值
+	IntervalIndex int      // 价格区间索引
+	UserIDs       []string // 需要@的用户ID列表
+}
+
 // buildFeishuCard 构建飞书卡片消息
-func buildFeishuCard(goldList []GoldInfo) string {
+func buildFeishuCard(goldList []GoldInfo, shouldAlert bool, alertInfo *AlertInfo) string {
 	var elements []map[string]interface{}
 
 	// 添加分割线
@@ -179,6 +204,23 @@ func buildFeishuCard(goldList []GoldInfo) string {
 		})
 	}
 
+	// 如果需要告警，添加@用户
+	if shouldAlert && alertInfo != nil {
+		// 构建@用户的文本
+		atText := ""
+		for _, userID := range alertInfo.UserIDs {
+			atText += fmt.Sprintf("<at id=\"%s\"></at> ", userID)
+		}
+
+		elements = append(elements, map[string]interface{}{
+			"tag": "div",
+			"text": map[string]interface{}{
+				"tag":     "lark_md",
+				"content": atText,
+			},
+		})
+	}
+
 	// 添加备注
 	elements = append(elements, map[string]interface{}{
 		"tag": "note",
@@ -192,8 +234,10 @@ func buildFeishuCard(goldList []GoldInfo) string {
 
 	title := "📊 工行实时价格"
 	if len(goldList) > 0 {
-		title = fmt.Sprintf("%s:%s", title, goldList[0].RealTimePrice)
+		currentPrice := goldList[0].RealTimePrice
+		title = fmt.Sprintf("%s:%s", title, currentPrice)
 	}
+
 	card := map[string]interface{}{
 		"config": map[string]interface{}{
 			"wide_screen_mode": true,
@@ -211,4 +255,117 @@ func buildFeishuCard(goldList []GoldInfo) string {
 
 	cardBytes, _ := json.Marshal(card)
 	return string(cardBytes)
+}
+
+// checkPriceAlert 检查价格是否需要告警
+// 返回值：是否需要告警，告警信息
+func checkPriceAlert(priceStr string) (bool, *AlertInfo) {
+	// 检查配置是否完整
+	if len(cfg.GlobalConfig.ThresholdPrice) == 0 || len(cfg.GlobalConfig.FeiShuAtUser) == 0 {
+		return false, nil
+	}
+
+	// 解析当前价格
+	price, err := strconv.ParseFloat(priceStr, 64)
+	if err != nil {
+		fmt.Printf("[%s] 解析价格失败: %s\n", time.Now().Format("2006-01-02 15:04:05"), err.Error())
+		return false, nil
+	}
+
+	// 判断价格所在区间
+	intervalIndex := getPriceInterval(price, cfg.GlobalConfig.ThresholdPrice)
+	if intervalIndex == -1 {
+		// 价格不在任何告警区间内
+		return false, nil
+	}
+
+	// 检查该区间是否应该发送@消息
+	if !shouldSendAlert(intervalIndex, cfg.GlobalConfig.MaxAlertCount) {
+		fmt.Printf("[%s] 价格区间 %d 已达到最大告警次数，不再发送@消息\n",
+			time.Now().Format("2006-01-02 15:04:05"), intervalIndex)
+		return false, nil
+	}
+
+	// 增加该区间的告警计数
+	incrementAlertCount(intervalIndex)
+
+	// 构建告警信息
+	alertInfo := &AlertInfo{
+		Threshold:     cfg.GlobalConfig.ThresholdPrice[intervalIndex],
+		IntervalIndex: intervalIndex,
+		UserIDs:       cfg.GlobalConfig.FeiShuAtUser,
+	}
+
+	fmt.Printf("[%s] 价格告警：价格区间 %d，当前价格 %s，阈值 %.2f\n",
+		time.Now().Format("2006-01-02 15:04:05"), intervalIndex, priceStr, alertInfo.Threshold)
+
+	return true, alertInfo
+}
+
+// getPriceInterval 获取价格所在的区间索引
+// 阈值数组应该从大到小排序，例如 [100, 80, 70]
+// 返回值：
+//   -1: 价格 >= 最大阈值（不在告警区间）
+//   0: 价格在第一个区间（第二大阈值 <= 价格 < 最大阈值）
+//   1: 价格在第二个区间（第三大阈值 <= 价格 < 第二大阈值）
+//   ...以此类推
+//   n-1: 价格 < 最小阈值（n为阈值数组长度）
+func getPriceInterval(price float64, thresholds []float64) int {
+	if len(thresholds) == 0 {
+		return -1
+	}
+
+	// 确保阈值数组从大到小排序
+	sortedThresholds := make([]float64, len(thresholds))
+	copy(sortedThresholds, thresholds)
+	sort.Sort(sort.Reverse(sort.Float64Slice(sortedThresholds)))
+
+	// 如果价格大于等于最大阈值，不在任何告警区间
+	if price >= sortedThresholds[0] {
+		return -1
+	}
+
+	// 查找价格所在区间
+	for i := 0; i < len(sortedThresholds); i++ {
+		if price < sortedThresholds[i] {
+			// 如果是最后一个阈值，或者价格大于等于下一个阈值
+			if i == len(sortedThresholds)-1 || price >= sortedThresholds[i+1] {
+				return i
+			}
+		}
+	}
+
+	return -1
+}
+
+// shouldSendAlert 判断是否应该发送@消息
+func shouldSendAlert(intervalIndex int, maxCount int) bool {
+	cacheKey := fmt.Sprintf("alert_interval_%d", intervalIndex)
+	countVal, found := alertCache.Get(cacheKey)
+	if !found {
+		return true
+	}
+
+	count, ok := countVal.(int)
+	if !ok {
+		return true
+	}
+
+	return count < maxCount
+}
+
+// incrementAlertCount 增加指定区间的告警计数
+func incrementAlertCount(intervalIndex int) {
+	cacheKey := fmt.Sprintf("alert_interval_%d", intervalIndex)
+	countVal, found := alertCache.Get(cacheKey)
+
+	count := 0
+	if found {
+		if c, ok := countVal.(int); ok {
+			count = c
+		}
+	}
+
+	count++
+	alertCache.Set(cacheKey, count, cache.DefaultExpiration)
 }
