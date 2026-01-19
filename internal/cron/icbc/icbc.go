@@ -303,15 +303,22 @@ func checkPriceAlert(priceStr string) (bool, *AlertInfo) {
 }
 
 // getPriceInterval 获取价格所在的区间索引
-// 阈值数组应该从大到小排序，例如 [100, 80, 70]
+// 阈值数组应该从大到小排序，例如 [1051, 1047, 1045]
 // 返回值：
-//   -1: 价格 >= 最大阈值（不在告警区间）
-//   0: 价格在第一个区间（第二大阈值 <= 价格 < 最大阈值）
-//   1: 价格在第二个区间（第三大阈值 <= 价格 < 第二大阈值）
-//   ...以此类推
-//   n-1: 价格 < 最小阈值（n为阈值数组长度）
+//
+//	-1: 价格 >= 最大阈值，或价格 < 最小阈值（不在告警区间）
+//	0: 价格在第一个区间（第二大阈值 <= 价格 < 最大阈值）
+//	1: 价格在第二个区间（第三大阈值 <= 价格 < 第二大阈值）
+//	...以此类推
+//
+// 示例：阈值 [1051, 1047, 1045]
+//   - price >= 1051: 返回 -1（不告警）
+//   - 1047 <= price < 1051: 返回 0
+//   - 1045 <= price < 1047: 返回 1
+//   - price < 1045: 返回 -1（不告警）
 func getPriceInterval(price float64, thresholds []float64) int {
-	if len(thresholds) == 0 {
+	if len(thresholds) < 2 {
+		// 至少需要2个阈值才能形成一个区间
 		return -1
 	}
 
@@ -325,13 +332,15 @@ func getPriceInterval(price float64, thresholds []float64) int {
 		return -1
 	}
 
-	// 查找价格所在区间
-	for i := 0; i < len(sortedThresholds); i++ {
-		if price < sortedThresholds[i] {
-			// 如果是最后一个阈值，或者价格大于等于下一个阈值
-			if i == len(sortedThresholds)-1 || price >= sortedThresholds[i+1] {
-				return i
-			}
+	// 如果价格小于最小阈值，也不在任何告警区间
+	if price < sortedThresholds[len(sortedThresholds)-1] {
+		return -1
+	}
+
+	// 查找价格所在区间：sortedThresholds[i+1] <= price < sortedThresholds[i]
+	for i := 0; i < len(sortedThresholds)-1; i++ {
+		if price < sortedThresholds[i] && price >= sortedThresholds[i+1] {
+			return i
 		}
 	}
 
