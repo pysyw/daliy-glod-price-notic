@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -35,7 +34,7 @@ func (s *icbcCron) Run() {
 	if global.IsHoliday(time.Now()) {
 		return
 	}
-	feishuClient := feishu.NewClient(cfg.GlobalConfig.FeiShuRobotToken, "")
+	feishuClient := feishu.NewClient(cfg.GetRuntimeConfig().GetFeiShuToken(), "")
 	sendGoldPrice(feishuClient)
 }
 
@@ -128,8 +127,10 @@ type GoldInfo struct {
 
 // AlertInfo 告警信息
 type AlertInfo struct {
-	Threshold     float64  // 触发的阈值
 	IntervalIndex int      // 价格区间索引
+	Lower         float64  // 区间下限
+	Upper         float64  // 区间上限
+	MaxAlertCount int      // 该区间最大告警次数
 	UserIDs       []string // 需要@的用户ID列表
 }
 
@@ -223,18 +224,17 @@ func buildFeishuCard(goldList []GoldInfo, shouldAlert bool, alertInfo *AlertInfo
 
 	// 添加当前配置展示和修改按钮
 	runtimeCfg := cfg.GetRuntimeConfig()
-	thresholds := runtimeCfg.GetThresholdPrice()
+	intervals := runtimeCfg.GetPriceIntervals()
 	atUsers := runtimeCfg.GetFeiShuAtUser()
-	maxAlert := runtimeCfg.GetMaxAlertCount()
 
-	// 格式化阈值显示
-	thresholdStr := "未配置"
-	if len(thresholds) > 0 {
+	// 格式化配置显示
+	configStr := "未配置"
+	if len(intervals) > 0 {
 		var parts []string
-		for _, t := range thresholds {
-			parts = append(parts, fmt.Sprintf("%.2f", t))
+		for _, interval := range intervals {
+			parts = append(parts, fmt.Sprintf("[%.2f, %.2f) 最多%d次", interval.Lower, interval.Upper, interval.MaxAlertCount))
 		}
-		thresholdStr = strings.Join(parts, ", ")
+		configStr = strings.Join(parts, "\n")
 	}
 
 	// 格式化@用户显示
@@ -248,7 +248,7 @@ func buildFeishuCard(goldList []GoldInfo, shouldAlert bool, alertInfo *AlertInfo
 		"tag": "div",
 		"text": map[string]interface{}{
 			"tag":     "lark_md",
-			"content": fmt.Sprintf("**⚙️ 当前推送配置**\n价格区间：%s\n@用户数：%s\n最大告警次数：%d", thresholdStr, atUserStr, maxAlert),
+			"content": fmt.Sprintf("**⚙️ 当前推送配置**\n价格区间：\n%s\n@用户数：%s", configStr, atUserStr),
 		},
 	})
 
@@ -321,11 +321,10 @@ func checkPriceAlert(priceStr string, runtimeCfg *cfg.RuntimeConfig) (bool, *Ale
 		return false, nil
 	}
 
-	thresholds := runtimeCfg.GetThresholdPrice()
 	atUsers := runtimeCfg.GetFeiShuAtUser()
-	maxAlert := runtimeCfg.GetMaxAlertCount()
+	priceIntervals := runtimeCfg.GetPriceIntervals()
 
-	if len(thresholds) == 0 || len(atUsers) == 0 {
+	if len(priceIntervals) == 0 || len(atUsers) == 0 {
 		return false, nil
 	}
 
@@ -336,79 +335,37 @@ func checkPriceAlert(priceStr string, runtimeCfg *cfg.RuntimeConfig) (bool, *Ale
 		return false, nil
 	}
 
-	// 判断价格所在区间
-	intervalIndex := getPriceInterval(price, thresholds)
-	if intervalIndex == -1 {
-		// 价格不在任何告警区间内
-		return false, nil
-	}
+	// 查找价格所在的区间
+	for i, interval := range priceIntervals {
+		if price >= interval.Lower && price < interval.Upper {
+			// 检查该区间是否应该发送@消息
+			if !shouldSendAlert(i, interval.MaxAlertCount) {
+				fmt.Printf("[%s] 价格区间 %d [%.2f, %.2f) 已达到最大告警次数 %d，不再发送@消息\n",
+					time.Now().Format("2006-01-02 15:04:05"), i, interval.Lower, interval.Upper, interval.MaxAlertCount)
+				return false, nil
+			}
 
-	// 检查该区间是否应该发送@消息
-	if !shouldSendAlert(intervalIndex, maxAlert) {
-		fmt.Printf("[%s] 价格区间 %d 已达到最大告警次数，不再发送@消息\n",
-			time.Now().Format("2006-01-02 15:04:05"), intervalIndex)
-		return false, nil
-	}
+			// 增加该区间的告警计数
+			incrementAlertCount(i)
 
-	// 增加该区间的告警计数
-	incrementAlertCount(intervalIndex)
+			// 构建告警信息
+			alertInfo := &AlertInfo{
+				IntervalIndex: i,
+				Lower:         interval.Lower,
+				Upper:         interval.Upper,
+				MaxAlertCount: interval.MaxAlertCount,
+				UserIDs:       atUsers,
+			}
 
-	// 构建告警信息
-	alertInfo := &AlertInfo{
-		Threshold:     thresholds[intervalIndex],
-		IntervalIndex: intervalIndex,
-		UserIDs:       atUsers,
-	}
+			fmt.Printf("[%s] 价格告警：价格区间 %d [%.2f, %.2f)，当前价格 %.2f，最大告警次数 %d\n",
+				time.Now().Format("2006-01-02 15:04:05"), i, interval.Lower, interval.Upper, price, interval.MaxAlertCount)
 
-	fmt.Printf("[%s] 价格告警：价格区间 %d，当前价格 %s，阈值 %.2f\n",
-		time.Now().Format("2006-01-02 15:04:05"), intervalIndex, priceStr, alertInfo.Threshold)
-
-	return true, alertInfo
-}
-
-// getPriceInterval 获取价格所在的区间索引
-// 阈值数组应该从大到小排序，例如 [1051, 1047, 1045]
-// 返回值：
-//
-//	-1: 价格 >= 最大阈值，或价格 < 最小阈值（不在告警区间）
-//	0: 价格在第一个区间（第二大阈值 <= 价格 < 最大阈值）
-//	1: 价格在第二个区间（第三大阈值 <= 价格 < 第二大阈值）
-//	...以此类推
-//
-// 示例：阈值 [1051, 1047, 1045]
-//   - price >= 1051: 返回 -1（不告警）
-//   - 1047 <= price < 1051: 返回 0
-//   - 1045 <= price < 1047: 返回 1
-//   - price < 1045: 返回 -1（不告警）
-func getPriceInterval(price float64, thresholds []float64) int {
-	if len(thresholds) < 2 {
-		// 至少需要2个阈值才能形成一个区间
-		return -1
-	}
-
-	// 确保阈值数组从大到小排序
-	sortedThresholds := make([]float64, len(thresholds))
-	copy(sortedThresholds, thresholds)
-	sort.Sort(sort.Reverse(sort.Float64Slice(sortedThresholds)))
-
-	// 如果价格大于等于最大阈值，不在任何告警区间
-	if price >= sortedThresholds[0] {
-		return -1
-	}
-
-	// 如果价格小于最小阈值，也不在任何告警区间
-	if price < sortedThresholds[len(sortedThresholds)-1] {
-		return -1
-	}
-
-	// 查找价格所在区间：sortedThresholds[i+1] <= price < sortedThresholds[i]
-	for i := 0; i < len(sortedThresholds)-1; i++ {
-		if price < sortedThresholds[i] && price >= sortedThresholds[i+1] {
-			return i
+			return true, alertInfo
 		}
 	}
 
-	return -1
+	// 价格不在任何配置的区间内
+	return false, nil
 }
 
 // shouldSendAlert 判断是否应该发送@消息

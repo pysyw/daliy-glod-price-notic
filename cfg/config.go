@@ -1,7 +1,9 @@
 package cfg
 
 import (
+	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,24 +14,24 @@ import (
 func init() {
 	godotenv.Load()
 
-	// 初始化运行时配置（从环境变量加载默认值）
+	// 初始化运行时配置
 	runtimeConfig = &RuntimeConfig{}
 	runtimeConfig.Load()
+}
 
-	// 保留 GlobalConfig 用于向后兼容（已废弃，建议使用 GetRuntimeConfig）
-	GlobalConfig.FeiShuRobotToken = runtimeConfig.GetFeiShuToken()
-	GlobalConfig.ThresholdPrice = runtimeConfig.GetThresholdPrice()
-	GlobalConfig.FeiShuAtUser = runtimeConfig.GetFeiShuAtUser()
-	GlobalConfig.MaxAlertCount = runtimeConfig.GetMaxAlertCount()
+// PriceInterval 价格区间配置
+type PriceInterval struct {
+	Lower         float64 // 区间下限（包含）
+	Upper         float64 // 区间上限（不包含）
+	MaxAlertCount int     // 该区间最大告警次数
 }
 
 // RuntimeConfig 运行时配置（线程安全）
 type RuntimeConfig struct {
-	mu               sync.RWMutex
-	feiShuToken      string
-	thresholdPrice   []float64
-	feiShuAtUser     []string
-	maxAlertCount    int
+	mu             sync.RWMutex
+	feiShuToken    string
+	priceIntervals []PriceInterval // 价格区间列表
+	feiShuAtUser   []string
 }
 
 var runtimeConfig *RuntimeConfig
@@ -46,17 +48,10 @@ func (c *RuntimeConfig) Load() {
 
 	c.feiShuToken = os.Getenv("FEI_SHU_ACCESS_TOKEN")
 
-	// 解析价格阈值数组
-	thresholdStr := os.Getenv("THRESHOLD_PRICE")
-	c.thresholdPrice = []float64{}
-	if thresholdStr != "" {
-		parts := strings.Split(thresholdStr, ",")
-		for _, part := range parts {
-			part = strings.TrimSpace(part)
-			if val, err := strconv.ParseFloat(part, 64); err == nil {
-				c.thresholdPrice = append(c.thresholdPrice, val)
-			}
-		}
+	// 解析价格区间配置
+	intervalsStr := os.Getenv("PRICE_INTERVALS")
+	if intervalsStr != "" {
+		c.priceIntervals = parsePriceIntervals(intervalsStr)
 	}
 
 	// 解析@用户列表
@@ -71,15 +66,70 @@ func (c *RuntimeConfig) Load() {
 			}
 		}
 	}
+}
 
-	// 解析最大告警次数
-	maxAlertStr := os.Getenv("MAX_ALERT_COUNT")
-	c.maxAlertCount = 10 // 默认值
-	if maxAlertStr != "" {
-		if val, err := strconv.Atoi(maxAlertStr); err == nil && val > 0 {
-			c.maxAlertCount = val
+// parsePriceIntervals 解析价格区间配置字符串
+// 格式：下限-上限:次数,下限-上限:次数
+// 示例：1045-1047:5,1047-1051:10
+func parsePriceIntervals(str string) []PriceInterval {
+	var intervals []PriceInterval
+	parts := strings.Split(str, ",")
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
 		}
+
+		// 分离区间和告警次数（格式：下限-上限:次数）
+		segments := strings.Split(part, ":")
+		if len(segments) != 2 {
+			fmt.Printf("警告：跳过无效的价格区间配置 '%s'（格式应为 下限-上限:次数）\n", part)
+			continue
+		}
+
+		rangeStr := strings.TrimSpace(segments[0])
+		countStr := strings.TrimSpace(segments[1])
+
+		// 解析区间上下限
+		bounds := strings.Split(rangeStr, "-")
+		if len(bounds) != 2 {
+			fmt.Printf("警告：跳过无效的价格区间 '%s'（格式应为 下限-上限）\n", rangeStr)
+			continue
+		}
+
+		lower, err1 := strconv.ParseFloat(strings.TrimSpace(bounds[0]), 64)
+		upper, err2 := strconv.ParseFloat(strings.TrimSpace(bounds[1]), 64)
+		count, err3 := strconv.Atoi(countStr)
+
+		if err1 != nil || err2 != nil || err3 != nil {
+			fmt.Printf("警告：跳过无效的价格区间配置 '%s'（数字解析失败）\n", part)
+			continue
+		}
+
+		if lower >= upper {
+			fmt.Printf("警告：跳过无效的价格区间 '%s'（下限必须小于上限）\n", part)
+			continue
+		}
+
+		if count <= 0 {
+			fmt.Printf("警告：跳过无效的价格区间 '%s'（告警次数必须大于0）\n", part)
+			continue
+		}
+
+		intervals = append(intervals, PriceInterval{
+			Lower:         lower,
+			Upper:         upper,
+			MaxAlertCount: count,
+		})
 	}
+
+	// 按下限从小到大排序
+	sort.Slice(intervals, func(i, j int) bool {
+		return intervals[i].Lower < intervals[j].Lower
+	})
+
+	return intervals
 }
 
 // Getter 方法（线程安全）
@@ -90,11 +140,12 @@ func (c *RuntimeConfig) GetFeiShuToken() string {
 	return c.feiShuToken
 }
 
-func (c *RuntimeConfig) GetThresholdPrice() []float64 {
+// GetPriceIntervals 获取价格区间配置
+func (c *RuntimeConfig) GetPriceIntervals() []PriceInterval {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	result := make([]float64, len(c.thresholdPrice))
-	copy(result, c.thresholdPrice)
+	result := make([]PriceInterval, len(c.priceIntervals))
+	copy(result, c.priceIntervals)
 	return result
 }
 
@@ -106,19 +157,14 @@ func (c *RuntimeConfig) GetFeiShuAtUser() []string {
 	return result
 }
 
-func (c *RuntimeConfig) GetMaxAlertCount() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.maxAlertCount
-}
-
 // Setter 方法（线程安全）
 
-func (c *RuntimeConfig) SetThresholdPrice(prices []float64) {
+// SetPriceIntervals 设置价格区间配置
+func (c *RuntimeConfig) SetPriceIntervals(intervals []PriceInterval) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.thresholdPrice = make([]float64, len(prices))
-	copy(c.thresholdPrice, prices)
+	c.priceIntervals = make([]PriceInterval, len(intervals))
+	copy(c.priceIntervals, intervals)
 }
 
 func (c *RuntimeConfig) SetFeiShuAtUser(users []string) {
@@ -128,32 +174,13 @@ func (c *RuntimeConfig) SetFeiShuAtUser(users []string) {
 	copy(c.feiShuAtUser, users)
 }
 
-func (c *RuntimeConfig) SetMaxAlertCount(count int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if count > 0 {
-		c.maxAlertCount = count
-	}
-}
-
 // GetAllConfig 获取所有配置（用于展示）
-func (c *RuntimeConfig) GetAllConfig() map[string]interface{} {
+func (c *RuntimeConfig) GetAllConfig() map[string]any {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	return map[string]interface{}{
-		"threshold_price": c.thresholdPrice,
+	return map[string]any{
+		"price_intervals": c.priceIntervals,
 		"feishu_at_user":  c.feiShuAtUser,
-		"max_alert_count": c.maxAlertCount,
 	}
-}
-
-// GlobalConfig 全局配置（已废弃，保留用于向后兼容）
-var GlobalConfig = globalConfig{}
-
-type globalConfig struct {
-	FeiShuRobotToken string    // 飞书机器人 token
-	ThresholdPrice   []float64 // 价格阈值数组（从大到小排序）
-	FeiShuAtUser     []string  // 需要@的用户ID列表
-	MaxAlertCount    int       // 每个价格区间最多发送@消息的次数
 }

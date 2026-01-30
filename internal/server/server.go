@@ -71,28 +71,16 @@ func (s *Server) showConfigForm(c *gin.Context) {
 	runtimeCfg := cfg.GetRuntimeConfig()
 
 	// 获取当前配置
-	thresholds := runtimeCfg.GetThresholdPrice()
+	priceIntervals := runtimeCfg.GetPriceIntervals()
 	atUsers := runtimeCfg.GetFeiShuAtUser()
-	maxAlert := runtimeCfg.GetMaxAlertCount()
-
-	// 格式化阈值字符串（逗号分隔）
-	thresholdStr := ""
-	if len(thresholds) > 0 {
-		var parts []string
-		for _, t := range thresholds {
-			parts = append(parts, fmt.Sprintf("%.2f", t))
-		}
-		thresholdStr = strings.Join(parts, ",")
-	}
 
 	// 格式化@用户字符串（逗号分隔）
 	atUserStr := strings.Join(atUsers, ",")
 
 	// 准备模板数据
 	data := gin.H{
-		"ThresholdPrice": thresholdStr,
+		"PriceIntervals": priceIntervals,
 		"AtUsers":        atUserStr,
-		"MaxAlertCount":  maxAlert,
 		"Success":        c.Query("success") == "true",
 	}
 
@@ -105,20 +93,39 @@ func (s *Server) showConfigForm(c *gin.Context) {
 func (s *Server) updateConfig(c *gin.Context) {
 	runtimeCfg := cfg.GetRuntimeConfig()
 
-	// 解析价格阈值
-	thresholdStr := c.PostForm("threshold_price")
-	if thresholdStr != "" {
-		parts := strings.Split(thresholdStr, ",")
-		var thresholds []float64
-		for _, part := range parts {
-			part = strings.TrimSpace(part)
-			if val, err := strconv.ParseFloat(part, 64); err == nil {
-				thresholds = append(thresholds, val)
-			}
+	// 解析价格区间配置（从动态表单字段）
+	var intervals []cfg.PriceInterval
+	index := 0
+	for {
+		lowerStr := c.PostForm(fmt.Sprintf("interval_lower_%d", index))
+		upperStr := c.PostForm(fmt.Sprintf("interval_upper_%d", index))
+		countStr := c.PostForm(fmt.Sprintf("interval_count_%d", index))
+
+		// 如果字段不存在，说明没有更多区间了
+		if lowerStr == "" && upperStr == "" && countStr == "" {
+			break
 		}
-		if len(thresholds) > 0 {
-			runtimeCfg.SetThresholdPrice(thresholds)
+
+		// 解析数值
+		lower, err1 := strconv.ParseFloat(lowerStr, 64)
+		upper, err2 := strconv.ParseFloat(upperStr, 64)
+		count, err3 := strconv.Atoi(countStr)
+
+		// 验证数据有效性
+		if err1 == nil && err2 == nil && err3 == nil && lower < upper && count > 0 {
+			intervals = append(intervals, cfg.PriceInterval{
+				Lower:         lower,
+				Upper:         upper,
+				MaxAlertCount: count,
+			})
 		}
+
+		index++
+	}
+
+	// 更新配置
+	if len(intervals) > 0 {
+		runtimeCfg.SetPriceIntervals(intervals)
 	}
 
 	// 解析@用户列表
@@ -137,19 +144,7 @@ func (s *Server) updateConfig(c *gin.Context) {
 		}
 	}
 
-	// 解析最大告警次数
-	maxAlertStr := c.PostForm("max_alert_count")
-	if maxAlertStr != "" {
-		if val, err := strconv.Atoi(maxAlertStr); err == nil && val > 0 {
-			runtimeCfg.SetMaxAlertCount(val)
-		}
-	}
-
-	fmt.Printf("[%s] 配置更新成功 - 阈值: %v, @用户: %v, 最大告警次数: %d\n",
-		time.Now().Format("2006-01-02 15:04:05"),
-		runtimeCfg.GetThresholdPrice(),
-		runtimeCfg.GetFeiShuAtUser(),
-		runtimeCfg.GetMaxAlertCount())
+	fmt.Printf("[%s] 配置更新成功\n", time.Now().Format("2006-01-02 15:04:05"))
 
 	// 重定向回配置页面并显示成功消息
 	c.Redirect(http.StatusSeeOther, "/config?success=true")
@@ -157,9 +152,8 @@ func (s *Server) updateConfig(c *gin.Context) {
 
 // renderConfigPage 渲染配置页面 HTML
 func renderConfigPage(data gin.H) string {
-	thresholdPrice := data["ThresholdPrice"].(string)
+	priceIntervals := data["PriceIntervals"].([]cfg.PriceInterval)
 	atUsers := data["AtUsers"].(string)
-	maxAlertCount := data["MaxAlertCount"].(int)
 	success := data["Success"].(bool)
 
 	successHTML := ""
@@ -168,6 +162,33 @@ func renderConfigPage(data gin.H) string {
         <div class="success-message">
             ✓ 配置更新成功！新配置已立即生效。
         </div>`
+	}
+
+	// 生成区间行HTML
+	intervalRowsHTML := ""
+	if len(priceIntervals) == 0 {
+		// 如果没有配置，添加一个空行
+		intervalRowsHTML = `
+            <div class="interval-row" data-index="区间 1">
+                <input type="number" name="interval_lower_0" placeholder="下限（元）" step="0.01" required>
+                <span class="separator">-</span>
+                <input type="number" name="interval_upper_0" placeholder="上限（元）" step="0.01" required>
+                <span class="separator">:</span>
+                <input type="number" name="interval_count_0" placeholder="告警次数" min="1" required>
+                <button type="button" class="btn-delete" onclick="removeInterval(this)">删除</button>
+            </div>`
+	} else {
+		for i, interval := range priceIntervals {
+			intervalRowsHTML += fmt.Sprintf(`
+            <div class="interval-row" data-index="区间 %d">
+                <input type="number" name="interval_lower_%d" value="%.2f" placeholder="下限（元）" step="0.01" required>
+                <span class="separator">-</span>
+                <input type="number" name="interval_upper_%d" value="%.2f" placeholder="上限（元）" step="0.01" required>
+                <span class="separator">:</span>
+                <input type="number" name="interval_count_%d" value="%d" placeholder="告警次数" min="1" required>
+                <button type="button" class="btn-delete" onclick="removeInterval(this)">删除</button>
+            </div>`, i+1, i, interval.Lower, i, interval.Upper, i, interval.MaxAlertCount)
+		}
 	}
 
 	return fmt.Sprintf(`
@@ -198,7 +219,7 @@ func renderConfigPage(data gin.H) string {
             background: white;
             border-radius: 16px;
             box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            max-width: 600px;
+            max-width: 700px;
             width: 100%%;
             padding: 40px;
         }
@@ -247,8 +268,181 @@ func renderConfigPage(data gin.H) string {
             line-height: 1.5;
         }
 
-        input[type="text"],
-        input[type="number"] {
+        .intervals-container {
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 16px;
+            background: #f8f9fa;
+        }
+
+        .interval-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+        }
+
+        .interval-row input[type="number"] {
+            flex: 1;
+            min-width: 80px;
+            padding: 10px 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        .interval-row input[type="number"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .interval-row .separator {
+            color: #999;
+            font-weight: bold;
+            font-size: 16px;
+            flex-shrink: 0;
+        }
+
+        .btn-delete {
+            padding: 8px 12px;
+            background: #ff4757;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: bold;
+            transition: background 0.3s;
+            flex-shrink: 0;
+        }
+
+        .btn-delete:hover {
+            background: #ee5a6f;
+        }
+
+        /* 移动端适配 */
+        @media (max-width: 768px) {
+            body {
+                padding: 10px;
+            }
+
+            .container {
+                padding: 24px 20px;
+            }
+
+            h1 {
+                font-size: 24px;
+            }
+
+            .subtitle {
+                font-size: 13px;
+            }
+
+            .interval-row {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 10px;
+                padding: 12px;
+                background: white;
+                border-radius: 8px;
+                margin-bottom: 16px;
+                position: relative;
+            }
+
+            .interval-row input[type="number"] {
+                width: 100%%;
+                min-width: unset;
+                padding: 12px 14px;
+                font-size: 16px;
+            }
+
+            .interval-row .separator {
+                display: none;
+            }
+
+            .interval-row::before {
+                content: attr(data-index);
+                position: absolute;
+                top: -8px;
+                left: 12px;
+                background: #667eea;
+                color: white;
+                padding: 2px 8px;
+                border-radius: 4px;
+                font-size: 12px;
+                font-weight: bold;
+            }
+
+            .btn-delete {
+                width: 100%%;
+                padding: 12px;
+            }
+
+            .intervals-container {
+                padding: 12px;
+            }
+
+            .btn-add {
+                padding: 14px;
+                font-size: 15px;
+            }
+
+            .button-group {
+                flex-direction: column;
+            }
+
+            button[type="submit"],
+            button[type="button"].btn-secondary {
+                width: 100%%;
+                padding: 16px;
+            }
+        }
+
+        /* 小屏手机适配 */
+        @media (max-width: 480px) {
+            .container {
+                padding: 20px 16px;
+            }
+
+            h1 {
+                font-size: 22px;
+            }
+
+            .form-group {
+                margin-bottom: 20px;
+            }
+
+            .help-text {
+                font-size: 12px;
+            }
+
+            .example {
+                font-size: 12px;
+                padding: 10px 12px;
+            }
+        }
+
+        .btn-add {
+            width: 100%%;
+            padding: 12px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: background 0.3s;
+            margin-top: 8px;
+        }
+
+        .btn-add:hover {
+            background: #5568d3;
+        }
+
+        input[type="text"] {
             width: 100%%;
             padding: 12px 16px;
             border: 2px solid #e0e0e0;
@@ -257,8 +451,7 @@ func renderConfigPage(data gin.H) string {
             transition: border-color 0.3s;
         }
 
-        input[type="text"]:focus,
-        input[type="number"]:focus {
+        input[type="text"]:focus {
             outline: none;
             border-color: #667eea;
         }
@@ -269,7 +462,8 @@ func renderConfigPage(data gin.H) string {
             margin-top: 32px;
         }
 
-        button {
+        button[type="submit"],
+        button[type="button"].btn-secondary {
             flex: 1;
             padding: 14px 24px;
             border: none;
@@ -280,12 +474,12 @@ func renderConfigPage(data gin.H) string {
             transition: all 0.3s;
         }
 
-        .btn-primary {
+        button[type="submit"] {
             background: linear-gradient(135deg, #667eea 0%%, #764ba2 100%%);
             color: white;
         }
 
-        .btn-primary:hover {
+        button[type="submit"]:hover {
             transform: translateY(-2px);
             box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4);
         }
@@ -300,17 +494,18 @@ func renderConfigPage(data gin.H) string {
         }
 
         .example {
-            background: #f8f9fa;
-            border-left: 4px solid #667eea;
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
             padding: 12px 16px;
             margin-top: 8px;
             border-radius: 4px;
             font-size: 13px;
-            color: #555;
+            color: #856404;
+            line-height: 1.6;
         }
 
         .example strong {
-            color: #667eea;
+            color: #e67e22;
         }
     </style>
 </head>
@@ -321,17 +516,26 @@ func renderConfigPage(data gin.H) string {
 
         %s
 
-        <form method="POST" action="/config">
+        <form method="POST" action="/config" onsubmit="reindexIntervals()">
             <div class="form-group">
-                <label for="threshold_price">价格阈值区间</label>
-                <input type="text" id="threshold_price" name="threshold_price"
-                       value="%s"
-                       placeholder="1051,1047,1045" required>
+                <label>价格区间配置</label>
+                <div class="intervals-container">
+                    <div id="intervals-list">
+                        %s
+                    </div>
+                    <button type="button" class="btn-add" onclick="addInterval()">+ 添加区间</button>
+                </div>
                 <div class="help-text">
-                    多个阈值用英文逗号分隔，从大到小排序。系统会在价格进入区间时发送@提醒。
+                    每个区间包含：<strong>下限</strong>、<strong>上限</strong>、<strong>最大告警次数</strong>
                 </div>
                 <div class="example">
-                    <strong>示例：</strong> 1051,1047,1045 表示价格在 [1047, 1051) 和 [1045, 1047) 区间时会触发告警
+                    <strong>💡 配置说明：</strong>
+                    <br>• 下限 1045 - 上限 1047 : 次数 5
+                    <br>&nbsp;&nbsp;&nbsp;→ 表示价格在 [1045, 1047) 区间时最多告警5次
+                    <br>• 下限 1047 - 上限 1051 : 次数 10
+                    <br>&nbsp;&nbsp;&nbsp;→ 表示价格在 [1047, 1051) 区间时最多告警10次
+                    <br><br><strong>⚠️ 重要：</strong>只有当价格在区间内才会触发@提醒！
+                    <br>例如：配置 1080-1185:3，则价格在 1080~1185 元之间都会@人
                 </div>
             </div>
 
@@ -343,28 +547,60 @@ func renderConfigPage(data gin.H) string {
                 <div class="help-text">
                     需要@的飞书用户 ID，多个用户用英文逗号分隔。留空则不@任何人。
                 </div>
-                <div class="example">
-                    <strong>获取用户 ID：</strong> 在飞书开放平台查看用户的 open_id 或 user_id
-                </div>
-            </div>
-
-            <div class="form-group">
-                <label for="max_alert_count">最大告警次数</label>
-                <input type="number" id="max_alert_count" name="max_alert_count"
-                       value="%d"
-                       min="1" max="100" required>
-                <div class="help-text">
-                    每个价格区间最多发送@消息的次数，超过后仅推送不@。有效期1小时。
-                </div>
             </div>
 
             <div class="button-group">
                 <button type="button" class="btn-secondary" onclick="window.history.back()">取消</button>
-                <button type="submit" class="btn-primary">保存配置</button>
+                <button type="submit">保存配置</button>
             </div>
         </form>
     </div>
+
+    <script>
+        let intervalCount = %d;
+
+        function addInterval() {
+            const container = document.getElementById('intervals-list');
+            const newRow = document.createElement('div');
+            newRow.className = 'interval-row';
+            newRow.setAttribute('data-index', '区间 ' + (container.children.length + 1));
+            newRow.innerHTML = ` + "`" + `
+                <input type="number" name="interval_lower_${intervalCount}" placeholder="下限（元）" step="0.01" required>
+                <span class="separator">-</span>
+                <input type="number" name="interval_upper_${intervalCount}" placeholder="上限（元）" step="0.01" required>
+                <span class="separator">:</span>
+                <input type="number" name="interval_count_${intervalCount}" placeholder="告警次数" min="1" required>
+                <button type="button" class="btn-delete" onclick="removeInterval(this)">删除</button>
+            ` + "`" + `;
+            container.appendChild(newRow);
+            intervalCount++;
+            updateIntervalIndexes();
+        }
+
+        function removeInterval(button) {
+            const row = button.parentElement;
+            row.remove();
+            updateIntervalIndexes();
+        }
+
+        function updateIntervalIndexes() {
+            const rows = document.querySelectorAll('.interval-row');
+            rows.forEach((row, index) => {
+                row.setAttribute('data-index', '区间 ' + (index + 1));
+            });
+        }
+
+        function reindexIntervals() {
+            const rows = document.querySelectorAll('.interval-row');
+            rows.forEach((row, index) => {
+                const inputs = row.querySelectorAll('input');
+                inputs[0].name = ` + "`" + `interval_lower_${index}` + "`" + `;
+                inputs[1].name = ` + "`" + `interval_upper_${index}` + "`" + `;
+                inputs[2].name = ` + "`" + `interval_count_${index}` + "`" + `;
+            });
+        }
+    </script>
 </body>
 </html>
-`, successHTML, thresholdPrice, atUsers, maxAlertCount)
+`, successHTML, intervalRowsHTML, atUsers, len(priceIntervals))
 }
