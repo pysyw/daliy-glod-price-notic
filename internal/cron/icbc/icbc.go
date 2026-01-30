@@ -6,19 +6,19 @@ import (
 	"daliy-glod-price-notic/internal/handler"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/CatchZeng/feishu/pkg/feishu"
 	"github.com/patrickmn/go-cache"
 )
 
-var (
-	// alertCache 用于控制@消息发送次数，key为价格区间标识，value为发送次数
-	// 过期时间1小时，自动清理间隔10分钟
-	alertCache = cache.New(1*time.Hour, 10*time.Minute)
-)
+// alertCache 用于控制@消息发送次数，key为价格区间标识，value为发送次数
+// 过期时间1小时，自动清理间隔10分钟
+var alertCache = cache.New(1*time.Hour, 10*time.Minute)
 
 type icbcCron struct{}
 
@@ -69,7 +69,7 @@ func sendGoldPrice(client *feishu.Client) {
 	if len(goldList) > 0 {
 		currentPrice = goldList[0].RealTimePrice
 	}
-	shouldAlert, alertInfo := checkPriceAlert(currentPrice)
+	shouldAlert, alertInfo := checkPriceAlert(currentPrice, cfg.GetRuntimeConfig())
 
 	// 构建卡片消息（包含@信息）
 	cardJSON := buildFeishuCard(goldList, shouldAlert, alertInfo)
@@ -221,6 +221,62 @@ func buildFeishuCard(goldList []GoldInfo, shouldAlert bool, alertInfo *AlertInfo
 		})
 	}
 
+	// 添加当前配置展示和修改按钮
+	runtimeCfg := cfg.GetRuntimeConfig()
+	thresholds := runtimeCfg.GetThresholdPrice()
+	atUsers := runtimeCfg.GetFeiShuAtUser()
+	maxAlert := runtimeCfg.GetMaxAlertCount()
+
+	// 格式化阈值显示
+	thresholdStr := "未配置"
+	if len(thresholds) > 0 {
+		var parts []string
+		for _, t := range thresholds {
+			parts = append(parts, fmt.Sprintf("%.2f", t))
+		}
+		thresholdStr = strings.Join(parts, ", ")
+	}
+
+	// 格式化@用户显示
+	atUserStr := "未配置"
+	if len(atUsers) > 0 {
+		atUserStr = fmt.Sprintf("%d 个用户", len(atUsers))
+	}
+
+	// 配置信息展示
+	elements = append(elements, map[string]interface{}{
+		"tag": "div",
+		"text": map[string]interface{}{
+			"tag":     "lark_md",
+			"content": fmt.Sprintf("**⚙️ 当前推送配置**\n价格区间：%s\n@用户数：%s\n最大告警次数：%d", thresholdStr, atUserStr, maxAlert),
+		},
+	})
+
+	// 修改配置按钮
+	baseURL := os.Getenv("BASE_URL")
+	if baseURL == "" {
+		baseURL = "http://localhost:8080" // 默认值
+	}
+	elements = append(elements, map[string]interface{}{
+		"tag": "action",
+		"actions": []map[string]interface{}{
+			{
+				"tag": "button",
+				"text": map[string]interface{}{
+					"tag":     "plain_text",
+					"content": "🔧 修改配置",
+				},
+				"type": "primary",
+				"url":  fmt.Sprintf("%s/config", baseURL),
+			},
+		},
+	})
+
+	// 添加分割线
+	elements = append(elements, map[string]interface{}{
+		"tag": "hr",
+	})
+
 	// 添加备注
 	elements = append(elements, map[string]interface{}{
 		"tag": "note",
@@ -259,9 +315,17 @@ func buildFeishuCard(goldList []GoldInfo, shouldAlert bool, alertInfo *AlertInfo
 
 // checkPriceAlert 检查价格是否需要告警
 // 返回值：是否需要告警，告警信息
-func checkPriceAlert(priceStr string) (bool, *AlertInfo) {
+func checkPriceAlert(priceStr string, runtimeCfg *cfg.RuntimeConfig) (bool, *AlertInfo) {
 	// 检查配置是否完整
-	if len(cfg.GlobalConfig.ThresholdPrice) == 0 || len(cfg.GlobalConfig.FeiShuAtUser) == 0 {
+	if runtimeCfg == nil {
+		return false, nil
+	}
+
+	thresholds := runtimeCfg.GetThresholdPrice()
+	atUsers := runtimeCfg.GetFeiShuAtUser()
+	maxAlert := runtimeCfg.GetMaxAlertCount()
+
+	if len(thresholds) == 0 || len(atUsers) == 0 {
 		return false, nil
 	}
 
@@ -273,14 +337,14 @@ func checkPriceAlert(priceStr string) (bool, *AlertInfo) {
 	}
 
 	// 判断价格所在区间
-	intervalIndex := getPriceInterval(price, cfg.GlobalConfig.ThresholdPrice)
+	intervalIndex := getPriceInterval(price, thresholds)
 	if intervalIndex == -1 {
 		// 价格不在任何告警区间内
 		return false, nil
 	}
 
 	// 检查该区间是否应该发送@消息
-	if !shouldSendAlert(intervalIndex, cfg.GlobalConfig.MaxAlertCount) {
+	if !shouldSendAlert(intervalIndex, maxAlert) {
 		fmt.Printf("[%s] 价格区间 %d 已达到最大告警次数，不再发送@消息\n",
 			time.Now().Format("2006-01-02 15:04:05"), intervalIndex)
 		return false, nil
@@ -291,9 +355,9 @@ func checkPriceAlert(priceStr string) (bool, *AlertInfo) {
 
 	// 构建告警信息
 	alertInfo := &AlertInfo{
-		Threshold:     cfg.GlobalConfig.ThresholdPrice[intervalIndex],
+		Threshold:     thresholds[intervalIndex],
 		IntervalIndex: intervalIndex,
-		UserIDs:       cfg.GlobalConfig.FeiShuAtUser,
+		UserIDs:       atUsers,
 	}
 
 	fmt.Printf("[%s] 价格告警：价格区间 %d，当前价格 %s，阈值 %.2f\n",

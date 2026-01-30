@@ -3,7 +3,6 @@ services:
     build: .
     container_name: gold-price-notic
     restart: always
-    volumes:
-      - ./config.toml:/app/config.toml:ro
     environment:
       - TZ=Asia/Shanghai
+      - FEI_SHU_ACCESS_TOKEN=a311a342-21ed-48a7-952e-b4e79adb2cc6

@@ -8,7 +8,8 @@ RUN go mod download
 
 # 复制源码并编译
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o gold-price-notic .
+# 明确指定目标平台为 amd64，确保在云平台上能正常运行
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o gold-price-notic .
 
 # 运行镜像
 FROM alpine:latest
